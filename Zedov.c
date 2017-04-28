@@ -16,10 +16,11 @@
 #define delz 2.0
 #define T 300.0
 #define E 10
-#define P_atm 1.0
+#define RHO 1.0
+#define P_ATM 1.0
 #define core 63
+#define TIME 0.0
 
-#define deltat 0.01
 #define deltax 0.1
 #define deltay 0.1
 #define deltaz 0.1
@@ -31,6 +32,7 @@ int Ny = (int) Ly/dely;
 int Nz = (int) Lz/delz;
 int N_tot= 2097152; //(int) Nx*Ny*Nz;
 FLOAT time_step;
+FLOAT deltat;
 
 FLOAT ener;
 FLOAT pres;
@@ -38,11 +40,19 @@ FLOAT entalpia;
 FLOAT v_sound;
 FLOAT v_max;
 FLOAT v_temp;
+FLOAT VEL;
+FLOAT ENER;
 
 FLOAT rad;
 FILE *rad_dat, *dens_dat;
 
 int i, j, k, m;
+
+physics_grid * P_state;
+U_grid * U_state;
+F_grid * Fx_state;
+F_grid * Fy_state;
+F_grid * Fz_state;
 
 //------------------Declaraciones Funciones----------------
 void init_to_zero(FLOAT *p, int n_points);
@@ -52,22 +62,21 @@ F_grid * create_F_grid(void);
 void init_problem(physics_grid *P, U_grid *U, F_grid *Fx, F_grid *Fy, F_grid *Fz);
 void init_zedov(physics_grid *P, U_grid *U, F_grid *Fx, F_grid *Fy, F_grid *Fz);
 int ndx(int i, int j, int k, FLOAT length, FLOAT height, int cube);
-void update(physics_grid *P, U_grid *U, F_grid *Fx, F_grid *Fy, F_grid *Fz, FLOAT delt);
+void update(U_grid *U, F_grid *Fx, F_grid *Fy, F_grid *Fz, FLOAT delt);
 FLOAT fromU2Fx(FLOAT u0, FLOAT u1, FLOAT u2, FLOAT u3, FLOAT u4, int m);
 FLOAT fromU2Fy(FLOAT u0, FLOAT u1, FLOAT u2, FLOAT u3, FLOAT u4, int m);
 FLOAT fromU2Fz(FLOAT u0, FLOAT u1, FLOAT u2, FLOAT u3, FLOAT u4, int m);
 FLOAT presion(FLOAT u0, FLOAT u1, FLOAT u2, FLOAT u3, FLOAT u4);
+FLOAT t_step(U_grid *U);
 void fromUtoRho(U_grid *U);
+FLOAT eterm(FLOAT temp);
+FLOAT vterm(FLOAT temp);
+void evolve(U_grid *U, F_grid *Fx, F_grid *Fy, F_grid *Fz);
 
 //------------------Main----------------
 int main(){
   rad_dat=fopen("rad_dat.txt", "w");
   dens_dat=fopen("dens_dat.txt", "w");
-  physics_grid * P_state;
-  U_grid * U_state;
-  F_grid * Fx_state;
-  F_grid * Fy_state;
-  F_grid * Fz_state;
 
   P_state = create_physics_grid();
   U_state = create_U_grid();
@@ -77,13 +86,8 @@ int main(){
 
   init_problem(P_state, U_state, Fx_state, Fy_state, Fz_state);
   init_zedov(P_state, U_state, Fx_state, Fy_state, Fz_state);
+  evolve(U_state, Fx_state, Fy_state, Fz_state);
   fromUtoRho(U_state);
-  /*for(i=0;i<Ny;i++){
-    for(j=0;j<Nz;j++){
-      printf("%f ", P_state->P[ndx(i,j,core, Ny, Nz,3)]);
-    }
-    printf("\n");
-  }*/
 
   return 0;
 }
@@ -203,8 +207,8 @@ void init_problem(physics_grid *P, U_grid *U, F_grid *Fx, F_grid *Fy, F_grid *Fz
   init_to_zero(Fz->F, Fz->N_cells * NDIM * (NDIM +2));
 }
 void init_zedov(physics_grid *P, U_grid *U, F_grid *Fx, F_grid *Fy, F_grid *Fz){
-
-  FLOAT dens=1.0/E*(GAM-1);
+  VEL=vterm(T);
+  ENER=eterm(T);
   /*P->P[ndx(core,core,core, P->N_x, P->N_y, 3)]=P_atm;
   P->P[ndx(core,core,core, P->N_x, P->N_y, 4)]=dens;
 
@@ -220,10 +224,52 @@ void init_zedov(physics_grid *P, U_grid *U, F_grid *Fx, F_grid *Fy, F_grid *Fz){
   for(i=0;i<Nx;i++){
     for(j=0;j<Ny;j++){
       for(k=0;k<Nz;k++){
-        U->U[ndx(i,j,k,Nx,Ny,0)]= (FLOAT) pow(pow(i-core,2)+pow(j-core,2)+pow(j-core,2),0.5)*delx/2;
+        P->P[ndx(i,j,k,Nx,Ny,0)]=VEL;
+        P->P[ndx(i,j,k,Nx,Ny,1)]=VEL;
+        P->P[ndx(i,j,k,Nx,Ny,2)]=VEL;
+        P->P[ndx(i,j,k,Nx,Ny,3)]=P_ATM;
+        P->P[ndx(i,j,k,Nx,Ny,4)]=RHO;
+
+        U->U[ndx(i,j,k,Nx,Ny,0)]=RHO;
+        U->U[ndx(i,j,k,Nx,Ny,1)]=RHO*VEL;
+        U->U[ndx(i,j,k,Nx,Ny,2)]=RHO*VEL;
+        U->U[ndx(i,j,k,Nx,Ny,3)]=RHO*VEL;
+        U->U[ndx(i,j,k,Nx,Ny,4)]=RHO*ENER;
+
+        Fx->F[ndx(i,j,k,Nx,Ny,0)]=RHO*VEL;
+        Fx->F[ndx(i,j,k,Nx,Ny,1)]=RHO*pow(VEL,2)+P_ATM;
+        Fx->F[ndx(i,j,k,Nx,Ny,2)]=RHO*pow(VEL,2);
+        Fx->F[ndx(i,j,k,Nx,Ny,3)]=RHO*pow(VEL,2);
+        Fx->F[ndx(i,j,k,Nx,Ny,4)]=RHO*ENER*VEL+P_ATM*VEL;
+
+        Fy->F[ndx(i,j,k,Nx,Ny,0)]=RHO*VEL;
+        Fy->F[ndx(i,j,k,Nx,Ny,1)]=RHO*pow(VEL,2);
+        Fy->F[ndx(i,j,k,Nx,Ny,2)]=RHO*pow(VEL,2)+P_ATM;
+        Fy->F[ndx(i,j,k,Nx,Ny,3)]=RHO*pow(VEL,2);
+        Fy->F[ndx(i,j,k,Nx,Ny,4)]=RHO*ENER*VEL+P_ATM*VEL;
+
+        Fz->F[ndx(i,j,k,Nx,Ny,0)]=RHO*VEL;
+        Fz->F[ndx(i,j,k,Nx,Ny,1)]=RHO*pow(VEL,2);
+        Fz->F[ndx(i,j,k,Nx,Ny,2)]=RHO*pow(VEL,2);
+        Fz->F[ndx(i,j,k,Nx,Ny,3)]=RHO*pow(VEL,2)+P_ATM;
+        Fz->F[ndx(i,j,k,Nx,Ny,4)]=RHO*ENER*VEL+P_ATM*VEL;
       }
     }
   }
+
+  U->U[ndx(core,core,core,Nx,Ny,4)]=RHO*E;
+
+  FLOAT pt=presion(U->U[ndx(core,core,core,Nx,Ny,0)], U->U[ndx(core,core,core,Nx,Ny,1)], U->U[ndx(core,core,core,Nx,Ny,2)], U->U[ndx(core,core,core,Nx,Ny,3)], U->U[ndx(core,core,core,Nx,Ny,4)]);
+  P->P[ndx(core,core,core,Nx,Ny,3)]=pt;
+
+  Fx->F[ndx(core,core,core,Nx,Ny,1)]=RHO*pow(VEL,2)+pt;
+  Fx->F[ndx(core,core,core,Nx,Ny,4)]=RHO*E*VEL+pt*VEL;
+
+  Fy->F[ndx(core,core,core,Nx,Ny,2)]=RHO*pow(VEL,2)+pt;
+  Fy->F[ndx(core,core,core,Nx,Ny,4)]=RHO*E*VEL+pt*VEL;
+
+  Fz->F[ndx(core,core,core,Nx,Ny,3)]=RHO*pow(VEL,2)+pt;
+  Fz->F[ndx(core,core,core,Nx,Ny,4)]=RHO*E*VEL+pt*VEL;
 
 }
 int ndx(int i, int j, int k, FLOAT length, FLOAT height, int cube){
@@ -231,7 +277,7 @@ int ndx(int i, int j, int k, FLOAT length, FLOAT height, int cube){
   res = ((i*length*height)+j*height+k)+cube*N_tot;
   return res;
 }
-void update(physics_grid *P, U_grid *U, F_grid *Fx, F_grid *Fy, F_grid *Fz, FLOAT delt){
+void update(U_grid *U, F_grid *Fx, F_grid *Fy, F_grid *Fz, FLOAT delt){
 
   FLOAT * U_halfs;
   FLOAT * F_halfs;
@@ -330,9 +376,9 @@ FLOAT fromU2Fz(FLOAT u0, FLOAT u1, FLOAT u2, FLOAT u3, FLOAT u4, int m){
   }
 }
 FLOAT presion(FLOAT u0, FLOAT u1, FLOAT u2, FLOAT u3, FLOAT u4){
-  return (GAM-1)*(u4-0.5*(pow(u1,2)+pow(u2,2)+pow(u3,2)));
+  return (GAM-1)*(u4+0.5/u0*(pow(u1,2)+pow(u2,2)+pow(u3,2)));
 }
-FLOAT t_step(physics_grid *P, U_grid *U){
+FLOAT t_step(U_grid *U){
   v_max=0.0;
   for(i=0;i<Nx;i++){
     for(j=0;j<Ny;j++){
@@ -341,22 +387,22 @@ FLOAT t_step(physics_grid *P, U_grid *U){
         pres=presion(U->U[ndx(i,j,k,Nx,Ny,0)], U->U[ndx(i,j,k,Nx,Ny,1)], U->U[ndx(i,j,k,Nx,Ny,2)], U->U[ndx(i,j,k,Nx,Ny,3)], U->U[ndx(i,j,k,Nx,Ny,4)]);
         entalpia=ener+pres/U->U[ndx(i,j,k,Nx,Ny,0)];
         v_sound=pow((GAM-1)*entalpia,0.5);
-        v_temp=fabs(P->P[ndx(i,j,k,Nx,Ny,0)])+v_sound;
+        v_temp=fabs(U->U[ndx(i,j,k,Nx,Ny,1)]/U->U[ndx(i,j,k,Nx,Ny,0)])+v_sound;
         if(v_temp > v_max){
           v_max=v_temp;
         }
-        v_temp=fabs(P->P[ndx(i,j,k,Nx,Ny,1)])+v_sound;
+        v_temp=fabs(U->U[ndx(i,j,k,Nx,Ny,2)]/U->U[ndx(i,j,k,Nx,Ny,0)])+v_sound;
         if(v_temp > v_max){
           v_max=v_temp;
         }
-        v_temp=fabs(P->P[ndx(i,j,k,Nx,Ny,2)])+v_sound;
+        v_temp=fabs(U->U[ndx(i,j,k,Nx,Ny,3)]/U->U[ndx(i,j,k,Nx,Ny,0)])+v_sound;
         if(v_temp > v_max){
           v_max=v_temp;
         }
       }
     }
   }
-  time_step=2.0*delx/v_max;
+  time_step=0.5*delx/v_max;
   return time_step;
 }
 void fromUtoRho(U_grid *U){
@@ -370,5 +416,19 @@ void fromUtoRho(U_grid *U){
       fprintf(rad_dat, "\n");
       fprintf(dens_dat, "\n");
     }
+  }
+}
+FLOAT vterm(FLOAT temp){
+  return 1.0;
+}
+FLOAT eterm(FLOAT temp){
+  return 1.0;
+}
+void evolve(U_grid *U, F_grid *Fx, F_grid *Fy, F_grid *Fz){
+  FLOAT tiempo=0.0;
+  while(tiempo<TIME){
+    deltat=t_step(U);
+    update(U, Fx, Fy, Fz, deltat);
+    tiempo += deltat;
   }
 }
